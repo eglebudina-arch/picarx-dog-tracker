@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Generated files
+*.log
+logs/
+.DS_Store
+
+# Model binaries downloaded separately
+models/*.onnx
+models/*.caffemodel
