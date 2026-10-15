@@ -36,7 +36,7 @@ Configured capture rate is not end-to-end processing speed.
 
 ## Files
 
-- `live_tracking.py`: detection, camera pan tracking and browser streaming.
+- `live_tracking.py`: detection, camera pan tracking and browser streaming. (Updated: now uses a single background worker for capture, inference, servo updates, and publishing the latest encoded JPEG to viewers.)
 - `live_nanodet.py`: detection and streaming without servo control.
 - `nanodet.py`: inference helper adapted from OpenCV Zoo.
 - `live_detector.py`: earlier MobileNet SSD experiment.
@@ -46,7 +46,6 @@ Configured capture rate is not end-to-end processing speed.
 
 A working Raspberry Pi camera, OpenCV, Picamera2, Flask, NumPy and
 SunFounder robot libraries are required.
-Clean-device installation instructions are still being validated.
 
 Clone: `git clone https://github.com/eglebudina-arch/picarx-dog-tracker.git`
 
@@ -78,20 +77,24 @@ NanoDet inference took approximately 0.21 seconds for a test frame on
 the Pi 4. This excludes capture, application preprocessing and streaming.
 
 Scout's lighter coat was detected and tracked successfully in informal tests.
-Charlie's dark coat was harder to detect in low light, with occasional
+Charlie’s dark coat was harder to detect in low light, with occasional
 cat or person classifications. Brighter lighting helped.
 
 These are observations, not a measured accuracy benchmark.
 
-## Limitations
+## Limitations and behaviour changes (updated)
 
 - Pan tracking only; tilt and autonomous driving are not implemented.
-- Each browser viewer starts a separate processing loop.
-- Tracking stops when no viewer is consuming the stream.
-- Target selection may switch between dogs.
+- Tracking now runs independently of browser viewers (background worker).
+- Each browser viewer no longer starts a separate processing loop; viewers
+  now consume the latest JPEG produced by the single worker.
+- The previous behaviour where tracking stopped when no viewers were
+  connected has been removed: tracking continues even with zero viewers.
 - Hardware initialises at module import.
 - The helper uses class-agnostic non-maximum suppression.
-- Reliable shutdown after streaming still needs verification.
+- Reliable shutdown after streaming still needs verification on real
+  hardware; the code attempts to ensure the worker exits before
+  hardware cleanup, but this must be validated on a Pi.
 
 ## GPIO troubleshooting
 
@@ -104,10 +107,37 @@ Other setups may require a different chip number.
 - Separate detection, tracking and streaming into small modules.
 - Add configuration, logging and a dry-run mode.
 - Test target selection and movement limits without hardware.
-- Share one processing loop across browser viewers.
+- Share one processing loop across browser viewers. (Implemented in this PR.)
 - Measure performance under different lighting conditions.
 - Explore tilt tracking and individual dog recognition.
 - Later investigate navigation, mapping and voice interaction.
+
+## Validation (hardware-free tests added)
+
+These tests can be run without moving servos or a Pi camera by mocking
+`camera.capture_array` and `px.set_cam_pan_angle` in unit tests. They
+help validate the new worker/viewer coordination and shutdown ordering.
+
+1) Connection before first frame
+- Start the application but prevent the worker from publishing frames
+  initially (mock `_latest_jpeg` as None). Connect a viewer and assert
+  the viewer blocks until `_latest_jpeg` becomes non-None and the
+  sequence changes.
+
+2) Two viewers sharing frames
+- Connect two viewers; ensure both receive the same `_frame_seq` values
+  in order and that only one worker `model.infer` call occurs per frame
+  (mock `model.infer` and count calls).
+
+3) Waiting viewers wake on stop/failure
+- While viewers are waiting, cause the worker to set `_worker_running`
+  to False and optionally set `_worker_exception`. Verify viewers are
+  woken and generators exit.
+
+4) Shutdown ordering
+- Simulate a slow worker by delaying its exit. Call `stop_worker(timeout=5)`
+  and verify that hardware cleanup does not proceed until the worker has
+  exited or the process aborts as a safety measure.
 
 ## Attribution and licensing
 
@@ -116,8 +146,7 @@ The NanoDet helper and model originate from OpenCV Zoo:
 https://github.com/opencv/opencv_zoo/tree/main/models/object_detection_nanodet
 
 The helper includes local NumPy array-construction adaptations.
-The upstream NanoDet license is Apache 2.0; see
-`third_party/nanodet-LICENSE`.
+The upstream NanoDet license is Apache 2.0; see `third_party/nanodet-LICENSE`.
 
 Hardware control uses SunFounder's PiCar-X library:
 
